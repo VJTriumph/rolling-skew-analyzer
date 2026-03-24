@@ -27,11 +27,12 @@ button:disabled{background:#21262d;color:#484f58;cursor:not-allowed}
 .info-bar{padding:10px 24px;font-size:.78rem;color:#8b949e;background:#0d1117;min-height:32px}
 .info-bar.error{color:#f85149}
 .info-bar.ok{color:#3fb950}
-.legend{display:flex;gap:18px;padding:10px 24px 0;font-size:.75rem;color:#8b949e}
+.legend{display:flex;gap:18px;padding:10px 24px 0;font-size:.75rem;color:#8b949e;flex-wrap:wrap}
 .legend span{display:flex;align-items:center;gap:5px}
 .legend span::before{content:'';display:inline-block;width:24px;height:3px;border-radius:2px}
 .leg-np::before{background:#58a6ff}
 .leg-mo::before{background:#ff7b54}
+.leg-sma::before{background:#f0e040}
 .charts{padding:20px 24px;display:flex;flex-direction:column;gap:32px}
 .chart-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px 20px}
 .chart-title{font-size:.95rem;font-weight:600;margin-bottom:4px;color:#f0f6fc}
@@ -42,15 +43,16 @@ button:disabled{background:#21262d;color:#484f58;cursor:not-allowed}
 .badge-np{background:#1f4e79;color:#79c0ff}
 .badge-mo{background:#4e2a00;color:#ffa657}
 .badge-ex{background:#1c2b3a;color:#8b949e}
+.badge-sma{background:#3a3500;color:#f0e040}
 .empty{text-align:center;padding:60px;color:#484f58;font-size:.9rem}
 @media(max-width:700px){.chart-row{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <header>
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-  <h1>Rolling Skew Analyzer</h1>
-  <span id="hdrBadge">loading...</span>
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+<h1>Rolling Skew Analyzer</h1>
+<span id="hdrBadge">loading...</span>
 </header>
 <div class="controls">
   <div class="ctrl-group">
@@ -79,6 +81,10 @@ button:disabled{background:#21262d;color:#484f58;cursor:not-allowed}
     <input type="number" id="windowInput" value="20" min="3" max="252" style="width:90px"/>
   </div>
   <div class="ctrl-group">
+    <label>NP SMA Period</label>
+    <input type="number" id="smaInput" value="20" min="2" max="252" style="width:90px" title="SMA overlay on NP Skew chart"/>
+  </div>
+  <div class="ctrl-group">
     <label>Period</label>
     <select id="periodSelect">
       <option value="1y">1 Year</option>
@@ -95,6 +101,7 @@ button:disabled{background:#21262d;color:#484f58;cursor:not-allowed}
 </div>
 <div class="legend">
   <span class="leg-np">NP Skew bounded (-1,1)</span>
+  <span class="leg-sma">NP SMA line</span>
   <span class="leg-mo">Moment Skew unbounded</span>
 </div>
 <div class="info-bar" id="infoBar">Loading CSV files...</div>
@@ -105,6 +112,7 @@ var REPO_API='https://api.github.com/repos/VJTriumph/rolling-skew-analyzer/conte
 var YF_URL='https://query1.finance.yahoo.com/v8/finance/chart/';
 var CORS='https://corsproxy.io/?';
 var chartReg={},csvFiles=[],currentStocks=[];
+
 function dc(id){if(chartReg[id]){chartReg[id].destroy();delete chartReg[id];}}
 function mean(a){var s=0;for(var i=0;i<a.length;i++)s+=a[i];return s/a.length;}
 function median(a){var s=a.slice().sort(function(x,y){return x-y;});var m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;}
@@ -113,6 +121,13 @@ function npSkew(a){var s=stdev(a);return s===0?null:(mean(a)-median(a))/s;}
 function momentSkew(a){var mu=mean(a),s=stdev(a);if(s===0)return null;var sum=0;for(var i=0;i<a.length;i++)sum+=Math.pow((a[i]-mu)/s,3);return sum/a.length;}
 function rolling(fn,data,w){return data.map(function(_,i){return i<w-1?null:fn(data.slice(i-w+1,i+1));});}
 function logRets(p){return p.slice(1).map(function(v,i){return Math.log(v/p[i]);});}
+function computeSMA(vals,w){
+  return vals.map(function(_,i){
+    var win=[];
+    for(var j=i;j>=0&&win.length<w;j--){if(vals[j]!=null)win.push(vals[j]);}
+    return win.length===w?mean(win):null;
+  });
+}
 function parseCSV(text){
   var lines=text.trim().split('\n').map(function(l){return l.trim();}).filter(Boolean);
   if(lines.length<2)return[];
@@ -128,7 +143,7 @@ async function loadFiles(){
   try{
     var res=await fetch(CORS+encodeURIComponent(REPO_API));
     var files=await res.json();
-    csvFiles=Array.isArray(files)?files.filter(function(f){return f.name.endsWith('.csv');}).map(function(f){return {name:f.name,path:f.path};}):[];
+    csvFiles=Array.isArray(files)?files.filter(function(f){return f.name.endsWith('.csv');}).map(function(f){return {name:f.name,path:f.path};}):[]; 
     var sel=document.getElementById('fileSelect');sel.innerHTML='';
     if(!csvFiles.length){sel.innerHTML='<option>No CSV files found</option>';setInfo('No CSV files found.','error');return;}
     csvFiles.forEach(function(f,i){var o=document.createElement('option');o.value=i;o.textContent=f.name;sel.appendChild(o);});
@@ -164,17 +179,61 @@ async function fetchYF(ticker,period){
   var pairs=ts.map(function(t,i){return {t:t,c:cl[i]};}).filter(function(p){return p.c!=null;});
   return {dates:pairs.map(function(p){return p.t;}),prices:pairs.map(function(p){return p.c;})};
 }
-function mkChart(cid,dates,vals,color,yFixed){
+var highlightPlugin={
+  id:'highlightZones',
+  beforeDraw:function(chart){
+    if(!chart._highlightNP)return;
+    var ctx=chart.ctx,yAxis=chart.scales.y,xAxis=chart.scales.x;
+    var y0=yAxis.getPixelForValue(0);
+    var top=yAxis.top,bottom=yAxis.bottom,left=xAxis.left,right=xAxis.right;
+    ctx.save();
+    ctx.fillStyle='rgba(63,185,80,0.10)';
+    ctx.fillRect(left,top,right-left,y0-top);
+    ctx.fillStyle='rgba(248,81,73,0.10)';
+    ctx.fillRect(left,y0,right-left,bottom-y0);
+    ctx.restore();
+  }
+};
+Chart.register(highlightPlugin);
+function mkNPChart(cid,dates,npVals,smaVals){
+  dc(cid);
+  var smaPeriod=parseInt(document.getElementById('smaInput').value)||20;
+  var ctx=document.getElementById(cid).getContext('2d');
+  var chart=new Chart(ctx,{
+    type:'line',
+    data:{datasets:[
+      {label:'NP Skew',data:dates.map(function(d,i){return {x:d,y:npVals[i]};}).filter(function(p){return p.y!=null;}),borderColor:'#58a6ff',borderWidth:1.5,pointRadius:0,tension:0.2,fill:false,order:1},
+      {label:'SMA('+smaPeriod+')',data:dates.map(function(d,i){return {x:d,y:smaVals[i]};}).filter(function(p){return p.y!=null;}),borderColor:'#f0e040',borderWidth:2,pointRadius:0,tension:0.3,fill:false,order:0}
+    ]},
+    options:{
+      animation:false,responsive:true,maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      plugins:{
+        legend:{display:true,position:'top',align:'end',labels:{color:'#8b949e',boxWidth:20,boxHeight:2,padding:10,font:{size:10}}},
+        tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+(c.parsed.y!=null?c.parsed.y.toFixed(3):'');}}}
+      },
+      scales:{
+        x:{type:'time',time:{unit:'month'},grid:{color:'#21262d'},ticks:{color:'#8b949e',maxTicksLimit:8}},
+        y:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxTicksLimit:6},min:-1.1,max:1.1}
+      }
+    }
+  });
+  chart._highlightNP=true;
+  chartReg[cid]=chart;
+}
+function mkMoChart(cid,dates,vals){
   dc(cid);
   var ctx=document.getElementById(cid).getContext('2d');
-  chartReg[cid]=new Chart(ctx,{type:'line',
-    data:{datasets:[{label:yFixed?'NP Skew':'Moment Skew',data:dates.map(function(d,i){return {x:d,y:vals[i]};}).filter(function(p){return p.y!=null;}),borderColor:color,borderWidth:1.5,pointRadius:0,tension:0.2,fill:false}]},
-    options:{animation:false,responsive:true,maintainAspectRatio:false,
+  chartReg[cid]=new Chart(ctx,{
+    type:'line',
+    data:{datasets:[{label:'Moment Skew',data:dates.map(function(d,i){return {x:d,y:vals[i]};}).filter(function(p){return p.y!=null;}),borderColor:'#ff7b54',borderWidth:1.5,pointRadius:0,tension:0.2,fill:false}]},
+    options:{
+      animation:false,responsive:true,maintainAspectRatio:false,
       interaction:{mode:'index',intersect:false},
       plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+(c.parsed.y!=null?c.parsed.y.toFixed(3):'');}}}},
       scales:{
         x:{type:'time',time:{unit:'month'},grid:{color:'#21262d'},ticks:{color:'#8b949e',maxTicksLimit:8}},
-        y:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxTicksLimit:6},min:yFixed?-1.1:undefined,max:yFixed?1.1:undefined}
+        y:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxTicksLimit:6}}
       }
     }
   });
@@ -182,6 +241,7 @@ function mkChart(cid,dates,vals,color,yFixed){
 async function runAnalysis(){
   var tickers=Array.from(document.getElementById('tickerSelect').selectedOptions).map(function(o){return o.value;});
   var win=parseInt(document.getElementById('windowInput').value)||20;
+  var smaPeriod=parseInt(document.getElementById('smaInput').value)||20;
   var period=document.getElementById('periodSelect').value;
   var suffix=document.getElementById('exchangeSel').value;
   if(!tickers.length){setInfo('Select at least one ticker.','error');return;}
@@ -194,9 +254,12 @@ async function runAnalysis(){
     try{
       var data=await fetchYF(yft,period);
       var rets=logRets(data.prices);var rdates=data.dates.slice(1);
-      var npR=rolling(npSkew,rets,win);var moR=rolling(momentSkew,rets,win);
+      var npR=rolling(npSkew,rets,win);
+      var moR=rolling(momentSkew,rets,win);
+      var smaR=computeSMA(npR,smaPeriod);
       var lnp=npR.filter(function(x){return x!=null;}).pop();
       var lmo=moR.filter(function(x){return x!=null;}).pop();
+      var lsma=smaR.filter(function(x){return x!=null;}).pop();
       var stk=currentStocks.find(function(s){return s.ticker===raw;})||{};
       var card=document.createElement('div');card.className='chart-card';
       var ttl=document.createElement('div');ttl.className='chart-title';
@@ -206,16 +269,27 @@ async function runAnalysis(){
       if(suffix){var sfsp=document.createElement('span');sfsp.className='badge badge-ex';sfsp.textContent=suffix;ttl.appendChild(sfsp);}
       card.appendChild(ttl);
       var sub=document.createElement('div');sub.className='chart-sub';
-      sub.innerHTML='Window: <b>'+win+'d</b> &nbsp;|&nbsp; NP skew: <b style="color:#58a6ff">'+(lnp!=null?lnp.toFixed(3):'--')+'</b> <span class="badge badge-np">bounded</span> &nbsp;|&nbsp; Moment skew: <b style="color:#ff7b54">'+(lmo!=null?lmo.toFixed(3):'--')+'</b> <span class="badge badge-mo">unbounded</span>';
+      sub.innerHTML='Window: <b>'+win+'d</b> &nbsp;|&nbsp; NP skew: <b style="color:#58a6ff">'+(lnp!=null?lnp.toFixed(3):'--')+'</b> <span class="badge badge-np">bounded</span>'
+        +' &nbsp;|&nbsp; SMA('+smaPeriod+'): <b style="color:#f0e040">'+(lsma!=null?lsma.toFixed(3):'--')+'</b> <span class="badge badge-sma">sma</span>'
+        +' &nbsp;|&nbsp; Moment skew: <b style="color:#ff7b54">'+(lmo!=null?lmo.toFixed(3):'--')+'</b> <span class="badge badge-mo">unbounded</span>';
       card.appendChild(sub);
       var row=document.createElement('div');row.className='chart-row';
       var safeId=raw.replace(/[^a-zA-Z0-9]/g,'_');
-      var c1=document.createElement('div');var l1=document.createElement('div');l1.style.cssText='font-size:.75rem;color:#58a6ff;margin-bottom:6px';l1.textContent='NP skew (mean-median)/sigma  |bounds +/-1|';
-      var w1=document.createElement('div');w1.className='chart-wrap';var cv1=document.createElement('canvas');cv1.id='np_'+safeId;w1.appendChild(cv1);c1.appendChild(l1);c1.appendChild(w1);row.appendChild(c1);
-      var c2=document.createElement('div');var l2=document.createElement('div');l2.style.cssText='font-size:.75rem;color:#ff7b54;margin-bottom:6px';l2.textContent='Moment skew  mean((r-mu)^3)/sigma^3  unbounded';
-      var w2=document.createElement('div');w2.className='chart-wrap';var cv2=document.createElement('canvas');cv2.id='mo_'+safeId;w2.appendChild(cv2);c2.appendChild(l2);c2.appendChild(w2);row.appendChild(c2);
+      var c1=document.createElement('div');
+      var l1=document.createElement('div');l1.style.cssText='font-size:.75rem;color:#58a6ff;margin-bottom:6px';
+      l1.textContent='NP skew (mean-median)/sigma | bounds +/-1 | SMA('+smaPeriod+') highlighted';
+      var w1=document.createElement('div');w1.className='chart-wrap';
+      var cv1=document.createElement('canvas');cv1.id='np_'+safeId;
+      w1.appendChild(cv1);c1.appendChild(l1);c1.appendChild(w1);row.appendChild(c1);
+      var c2=document.createElement('div');
+      var l2=document.createElement('div');l2.style.cssText='font-size:.75rem;color:#ff7b54;margin-bottom:6px';
+      l2.textContent='Moment skew mean((r-mu)^3)/sigma^3 unbounded';
+      var w2=document.createElement('div');w2.className='chart-wrap';
+      var cv2=document.createElement('canvas');cv2.id='mo_'+safeId;
+      w2.appendChild(cv2);c2.appendChild(l2);c2.appendChild(w2);row.appendChild(c2);
       card.appendChild(row);document.getElementById('charts').appendChild(card);
-      mkChart('np_'+safeId,rdates,npR,'#58a6ff',true);mkChart('mo_'+safeId,rdates,moR,'#ff7b54',false);
+      mkNPChart('np_'+safeId,rdates,npR,smaR);
+      mkMoChart('mo_'+safeId,rdates,moR);
       done++;
     }catch(e){
       var ec=document.createElement('div');ec.className='chart-card';
@@ -224,7 +298,7 @@ async function runAnalysis(){
       ec.appendChild(eh);ec.appendChild(em);document.getElementById('charts').appendChild(ec);done++;
     }
   }
-  setInfo('Done - '+done+' ticker(s) | window='+win+'d'+(suffix?' | '+suffix:''),'ok');
+  setInfo('Done - '+done+' ticker(s) | window='+win+'d | SMA='+smaPeriod+(suffix?' | '+suffix:''),'ok');
   btn.disabled=false;btn.textContent='Run';
 }
 function setInfo(msg,type){var el=document.getElementById('infoBar');el.textContent=msg;el.className='info-bar'+(type?' '+type:'');}
