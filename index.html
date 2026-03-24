@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+  <html lang="en">
+  <head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Rolling Skew Analyzer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh}
+  header{background:#161b22;border-bottom:1px solid #30363d;padding:16px 24px;display:flex;align-items:center;gap:12px}
+  header h1{font-size:1.2rem;font-weight:600;color:#f0f6fc}
+  header span{font-size:.8rem;color:#8b949e;background:#21262d;padding:2px 8px;border-radius:12px;border:1px solid #30363d}
+  .controls{background:#161b22;border-bottom:1px solid #30363d;padding:14px 24px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end}
+  .ctrl-group{display:flex;flex-direction:column;gap:4px}
+  .ctrl-group label{font-size:.75rem;color:#8b949e;font-weight:500;text-transform:uppercase;letter-spacing:.05em}
+  select,input[type=number],input[type=text]{background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:6px 10px;font-size:.875rem;outline:none}
+    select:focus,input:focus{border-color:#388bfd}
+      select[multiple]{height:110px;min-width:180px}
+  button{background:#238636;color:#fff;border:none;border-radius:6px;padding:8px 18px;font-size:.875rem;font-weight:600;cursor:pointer;height:34px;align-self:flex-end}
+    button:hover{background:#2ea043}
+  button:disabled{background:#21262d;color:#484f58;cursor:not-allowed}
+  .info-bar{padding:10px 24px;font-size:.78rem;color:#8b949e;background:#0d1117;min-height:32px}
+  .info-bar.error{color:#f85149}
+    .info-bar.ok{color:#3fb950}
+  .charts{padding:20px 24px;display:flex;flex-direction:column;gap:32px}
+  .chart-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px 20px}
+  .chart-card h2{font-size:.95rem;font-weight:600;margin-bottom:4px;color:#f0f6fc}
+    .chart-card .sub{font-size:.78rem;color:#8b949e;margin-bottom:14px}
+  .chart-row{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .chart-wrap{position:relative;height:220px}
+  .badge{display:inline-block;font-size:.7rem;padding:1px 7px;border-radius:10px;margin-left:6px;vertical-align:middle}
+  .badge.np{background:#1f4e79;color:#79c0ff}
+  .badge.mo{background:#4e2a00;color:#ffa657}
+    .legend{display:flex;gap:18px;margin-bottom:10px;font-size:.75rem;color:#8b949e}
+  .legend span{display:flex;align-items:center;gap:5px}
+  .legend span::before{content:'';display:inline-block;width:24px;height:3px;border-radius:2px}
+      .leg-np::before{background:#58a6ff}
+      .leg-mo::before{background:#ff7b54}
+      .leg-zero::before{background:#484f58;border-top:1px dashed #484f58}
+  .leg-bound::before{background:#f85149;border-top:1px dotted #f85149}
+      .empty{text-align:center;padding:60px;color:#484f58;font-size:.9rem}
+  @media(max-width:700px){.chart-row{grid-template-columns:1fr}}
+</style>
+    </head>
+    <body>
+
+    <header>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      <h1>Rolling Skew Analyzer</h1>
+  <span>NP &amp; Moment-based</span>
+    </header>
+
+    <div class="controls">
+      <div class="ctrl-group">
+        <label>Ticker(s)</label>
+        <select id="tickerSelect" multiple></select>
+      </div>
+      <div class="ctrl-group">
+        <label>Window (days)</label>
+        <input type="number" id="windowInput" value="20" min="3" max="252" style="width:90px"/>
+      </div>
+      <div class="ctrl-group">
+        <label>Period</label>
+        <select id="periodSelect">
+          <option value="1y">1 Year</option>
+          <option value="2y" selected>2 Years</option>
+          <option value="5y">5 Years</option>
+        </select>
+      </div>
+      <button id="runBtn" onclick="runAnalysis()">Run</button>
+    </div>
+
+    <div class="info-bar" id="infoBar">Select tickers and click Run.</div>
+
+    <div class="legend" style="padding:10px 24px 0">
+      <span class="leg-np">NP Skew (mean−median)/σ  bounded (−1,1)</span>
+      <span class="leg-mo">Moment Skew  mean((r−μ)³)/σ³  unbounded</span>
+</div>
+
+<div class="charts" id="charts"><div class="empty">No data yet — select tickers and click Run.</div></div>
+
+    <script>
+    // ── constants ──────────────────────────────────────────────────────────────
+    const PROXY = 'https://query1.finance.yahoo.com/v8/finance/chart/';
+const CORS  = 'https://corsproxy.io/?';
+
+const STOCKS = [
+{ticker:'AAPL',name:'Apple Inc.',sector:'Technology'},
+{ticker:'MSFT',name:'Microsoft Corp.',sector:'Technology'},
+{ticker:'GOOGL',name:'Alphabet Inc.',sector:'Technology'},
+{ticker:'AMZN',name:'Amazon.com Inc.',sector:'Consumer Discretionary'},
+{ticker:'NVDA',name:'NVIDIA Corp.',sector:'Technology'},
+{ticker:'META',name:'Meta Platforms Inc.',sector:'Technology'},
+{ticker:'TSLA',name:'Tesla Inc.',sector:'Consumer Discretionary'},
+{ticker:'JPM',name:'JPMorgan Chase & Co.',sector:'Financials'},
+{ticker:'JNJ',name:'Johnson & Johnson',sector:'Health Care'},
+{ticker:'XOM',name:'Exxon Mobil Corp.',sector:'Energy'},
+{ticker:'V',name:'Visa Inc.',sector:'Financials'},
+{ticker:'UNH',name:'UnitedHealth Group Inc.',sector:'Health Care'},
+{ticker:'PG',name:'Procter & Gamble Co.',sector:'Consumer Staples'},
+{ticker:'MA',name:'Mastercard Inc.',sector:'Financials'},
+{ticker:'HD',name:'Home Depot Inc.',sector:'Consumer Discretionary'},
+{ticker:'CVX',name:'Chevron Corp.',sector:'Energy'},
+{ticker:'MRK',name:'Merck & Co. Inc.',sector:'Health Care'},
+{ticker:'ABBV',name:'AbbVie Inc.',sector:'Health Care'},
+{ticker:'PEP',name:'PepsiCo Inc.',sector:'Consumer Staples'},
+{ticker:'KO',name:'Coca-Cola Co.',sector:'Consumer Staples'},
+{ticker:'AVGO',name:'Broadcom Inc.',sector:'Technology'},
+{ticker:'COST',name:'Costco Wholesale Corp.',sector:'Consumer Staples'},
+{ticker:'TMO',name:'Thermo Fisher Scientific',sector:'Health Care'},
+{ticker:'WMT',name:'Walmart Inc.',sector:'Consumer Staples'},
+{ticker:'BAC',name:'Bank of America Corp.',sector:'Financials'},
+{ticker:'MCD',name:"McDonald's Corp.",sector:'Consumer Discretionary'},
+{ticker:'CSCO',name:'Cisco Systems Inc.',sector:'Technology'},
+{ticker:'ACN',name:'Accenture plc',sector:'Technology'},
+{ticker:'ABT',name:'Abbott Laboratories',sector:'Health Care'},
+{ticker:'LIN',name:'Linde plc',sector:'Materials'},
+];
+
+// ── populate ticker select ─────────────────────────────────────────────────
+const sel = document.getElementById('tickerSelect');
+STOCKS.forEach(s => {
+    const o = document.createElement('option');
+    o.value = s.ticker;
+  o.textContent = `${s.ticker} — ${s.name}`;
+  sel.appendChild(o);
+                         });
+// default: select first 5
+[...sel.options].slice(0,5).forEach(o => o.selected = true);
+
+// ── chart registry (to destroy on re-run) ─────────────────────────────────
+const chartRegistry = {};
+
+function destroyChart(id){
+    if(chartRegistry[id]){ chartRegistry[id].destroy(); delete chartRegistry[id]; }
+}
+
+// ── math helpers ──────────────────────────────────────────────────────────
+function mean(arr){ return arr.reduce((a,b)=>a+b,0)/arr.length; }
+function median(arr){
+    const s=[...arr].sort((a,b)=>a-b), m=Math.floor(s.length/2);
+  return s.length%2?s[m]:(s[m-1]+s[m])/2;
+}
+function stdev(arr){
+    const mu=mean(arr);
+  return Math.sqrt(arr.reduce((a,b)=>a+(b-mu)**2,0)/(arr.length-1));
+}
+function npSkew(arr){
+    const s=stdev(arr); if(s===0) return null;
+  return (mean(arr)-median(arr))/s;
+}
+function momentSkew(arr){
+    const mu=mean(arr), s=stdev(arr); if(s===0) return null;
+  return mean(arr.map(x=>((x-mu)/s)**3));
+}
+function rollingApply(fn, data, window){
+    return data.map((_,i)=>{
+          if(i<window-1) return null;
+    const slice=data.slice(i-window+1,i+1);
+    return fn(slice);
+});
+}
+function logReturns(prices){
+  return prices.slice(1).map((p,i)=>Math.log(p/prices[i]));
+}
+
+// ── fetch from Yahoo via CORS proxy ───────────────────────────────────────
+async function fetchYahoo(ticker, period){
+  const rangeMap={'1y':'1y','2y':'2y','5y':'5y'};
+  const url = `${PROXY}${encodeURIComponent(ticker)}?interval=1d&range=${rangeMap[period]}`;
+  const proxied = `${CORS}${encodeURIComponent(url)}`;
+  const res = await fetch(proxied);
+  if(!res.ok) throw new Error(`HTTP ${res.status} for ${ticker}`);
+  const json = await res.json();
+  const result = json?.chart?.result?.[0];
+  if(!result) throw new Error(`No data for ${ticker}`);
+  const timestamps = result.timestamp.map(t=>new Date(t*1000));
+  const closes = result.indicators.adjclose?.[0]?.adjclose ?? result.indicators.quote[0].close;
+  // filter nulls
+  const pairs = timestamps.map((t,i)=>({t,c:closes[i]})).filter(p=>p.c!=null);
+  return { dates: pairs.map(p=>p.t), prices: pairs.map(p=>p.c) };
+}
+
+// ── build a Chart.js chart ─────────────────────────────────────────────────
+function makeChart(canvasId, dates, npData, moData, yFixed){
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext('2d');
+
+  const npDataset = {
+    label:'NP Skew',
+    data: dates.map((d,i)=>({x:d,y:npData[i]})).filter(p=>p.y!=null),
+    borderColor:'#58a6ff', borderWidth:1.5, pointRadius:0, tension:0.2, fill:false
+};
+  const moDataset = {
+    label:'Moment Skew',
+    data: dates.map((d,i)=>({x:d,y:moData[i]})).filter(p=>p.y!=null),
+    borderColor:'#ff7b54', borderWidth:1.5, pointRadius:0, tension:0.2, fill:false
+};
+
+  const annotations = {
+    zero:{ type:'line', yMin:0, yMax:0, borderColor:'#484f58', borderWidth:1, borderDash:[4,4] }
+};
+  if(yFixed){
+    annotations.upper={ type:'line', yMin:1,  yMax:1,  borderColor:'#f85149', borderWidth:1, borderDash:[3,3] };
+    annotations.lower={ type:'line', yMin:-1, yMax:-1, borderColor:'#f85149', borderWidth:1, borderDash:[3,3] };
+}
+
+  chartRegistry[canvasId] = new Chart(ctx,{
+    type:'line',
+    data:{ datasets: yFixed ? [npDataset] : [moDataset] },
+    options:{
+      animation:false,
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index', intersect:false},
+      plugins:{
+        legend:{display:false},
+        tooltip:{
+          callbacks:{
+            label: ctx=>`${ctx.dataset.label}: ${ctx.parsed.y!=null?ctx.parsed.y.toFixed(3):''}`
+}
+}
+},
+      scales:{
+        x:{ type:'time', time:{unit:'month'}, grid:{color:'#21262d'}, ticks:{color:'#8b949e',maxTicksLimit:8} },
+        y:{
+          grid:{color:'#21262d'}, ticks:{color:'#8b949e', maxTicksLimit:6},
+          ...(yFixed ? {min:-1.1, max:1.1} : {})
+}
+}
+}
+});
+}
+
+// ── main ──────────────────────────────────────────────────────────────────
+async function runAnalysis(){
+  const tickers = [...document.getElementById('tickerSelect').selectedOptions].map(o=>o.value);
+  const window  = parseInt(document.getElementById('windowInput').value)||20;
+  const period  = document.getElementById('periodSelect').value;
+
+  if(!tickers.length){ setInfo('Select at least one ticker.','error'); return; }
+
+  const btn = document.getElementById('runBtn');
+  btn.disabled=true; btn.textContent='Fetching…';
+  setInfo(`Fetching ${tickers.length} ticker(s) from Yahoo Finance…`,'');
+
+  const chartsDiv = document.getElementById('charts');
+  chartsDiv.innerHTML='';
+
+  let done=0;
+  for(const ticker of tickers){
+    setInfo(`[${done+1}/${tickers.length}] Fetching ${ticker}…`,'');
+    try{
+      const {dates, prices} = await fetchYahoo(ticker, period);
+      const rets = logReturns(prices);
+      const retDates = dates.slice(1);
+
+      const npRolling = rollingApply(npSkew, rets, window);
+      const moRolling = rollingApply(momentSkew, rets, window);
+
+      const latestNP = npRolling.filter(x=>x!=null).at(-1);
+      const latestMO = moRolling.filter(x=>x!=null).at(-1);
+      const stock = STOCKS.find(s=>s.ticker===ticker);
+
+      const card = document.createElement('div');
+      card.className='chart-card';
+      card.innerHTML=`
+        <h2>${ticker} <small style="font-weight:400;color:#8b949e">— ${stock?.name??''}</small>
+          <span class="badge" style="background:#1c2b3a;color:#8b949e;font-size:.7rem">${stock?.sector??''}</span>
+        </h2>
+        <div class="sub">
+          Window: <b>${window}d</b> &nbsp;|&nbsp;
+          Latest NP skew: <b style="color:#58a6ff">${latestNP!=null?latestNP.toFixed(3):'—'}</b>
+          <span class="badge np">bounded</span> &nbsp;|&nbsp;
+          Latest Moment skew: <b style="color:#ff7b54">${latestMO!=null?latestMO.toFixed(3):'—'}</b>
+          <span class="badge mo">unbounded</span>
+        </div>
+        <div class="chart-row">
+          <div>
+            <div style="font-size:.75rem;color:#58a6ff;margin-bottom:6px">▪ Nonparametric skew &nbsp;<span style="color:#8b949e">(mean−median)/σ &nbsp; bounds ±1 shown</span></div>
+            <div class="chart-wrap"><canvas id="np_${ticker}"></canvas></div>
+          </div>
+          <div>
+            <div style="font-size:.75rem;color:#ff7b54;margin-bottom:6px">▪ Moment-based skew &nbsp;<span style="color:#8b949e">mean((r−μ)³)/σ³ &nbsp; no bounds</span></div>
+            <div class="chart-wrap"><canvas id="mo_${ticker}"></canvas></div>
+          </div>
+        </div>`;
+      chartsDiv.appendChild(card);
+
+      makeChart(`np_${ticker}`, retDates, npRolling, moRolling, true);
+      makeChart(`mo_${ticker}`, retDates, npRolling, moRolling, false);
+      done++;
+} catch(e){
+      const card = document.createElement('div');
+      card.className='chart-card';
+      card.innerHTML=`<h2 style="color:#f85149">${ticker} — Error</h2><div class="sub">${e.message}</div>`;
+      chartsDiv.appendChild(card);
+      done++;
+}
+}
+
+  setInfo(`Done — ${done} ticker(s) loaded, window = ${window} days.`,'ok');
+  btn.disabled=false; btn.textContent='Run';
+}
+
+function setInfo(msg, type){
+  const el=document.getElementById('infoBar');
+  el.textContent=msg;
+  el.className='info-bar'+(type?' '+type:'');
+}
+</script>
+</body>
+</html>
